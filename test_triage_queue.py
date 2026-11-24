@@ -102,6 +102,38 @@ class TriageQueueTests(unittest.TestCase):
             queue.enqueue(Patient("Sin zona", 1, datetime(2026, 1, 1)))
         self.assertEqual(queue.list_queue(), [existing])
 
+    def test_critical_arrival_during_processing_preempts_waiting_patients(self):
+        queue = TriageQueue()
+        arrival = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        first = Patient("Primer urgente", 2, arrival)
+        second = Patient("Segundo urgente", 2, arrival)
+        standard = Patient("Estándar", 3, arrival)
+        critical = Patient("Crítico", 1, arrival + timedelta(seconds=1))
+        for patient in (first, second, standard):
+            queue.enqueue(patient)
+
+        self.assertEqual(queue.dequeue(), first)
+        queue.enqueue(critical)
+        self.assertEqual(queue.peek(), critical)
+        self.assertEqual(queue.list_queue(), [critical, second, standard])
+        self.assertEqual(queue.stats(), {1: 1, 2: 1, 3: 1})
+        self.assertEqual(
+            [queue.dequeue() for _ in range(3)], [critical, second, standard]
+        )
+
+    def test_queue_remains_usable_after_empty_operations(self):
+        queue = TriageQueue()
+        with self.assertRaises(IndexError):
+            queue.peek()
+        with self.assertRaises(IndexError):
+            queue.dequeue()
+
+        patient = Patient("Ana", 2)
+        queue.enqueue(patient)
+        self.assertEqual(queue.peek(), patient)
+        self.assertEqual(queue.dequeue(), patient)
+        self.assertEqual(queue.stats(), {1: 0, 2: 0, 3: 0})
+
 
 class TriageCLITests(unittest.TestCase):
     def test_menu_handles_invalid_input_and_calls_by_priority(self):
