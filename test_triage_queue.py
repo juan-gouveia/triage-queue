@@ -1,10 +1,11 @@
+import threading
 import unittest
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
 from io import StringIO
 from unittest.mock import patch
 
-from triage_queue import Patient, TriageCLI, TriageQueue
+from triage_queue import EmptyQueueError, Patient, TriageCLI, TriageQueue
 
 
 class PatientTests(unittest.TestCase):
@@ -28,6 +29,18 @@ class PatientTests(unittest.TestCase):
             with self.subTest(level=level):
                 with self.assertRaisesRegex(ValueError, "nivel de triaje"):
                     Patient("Ana", level)
+
+    def test_invalid_names_are_rejected(self):
+        for name in ("", "   ", None, 123):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(ValueError, "nombre"):
+                    Patient(name, 1)
+
+    def test_invalid_arrival_times_are_rejected(self):
+        for arrival in (datetime(2026, 1, 1), "2026-01-01", None):
+            with self.subTest(arrival=arrival):
+                with self.assertRaisesRegex(ValueError, "zona horaria"):
+                    Patient("Ana", 1, arrival)
 
     def test_patient_cannot_be_modified_after_creation(self):
         patient = Patient("Ana", 1)
@@ -121,6 +134,57 @@ class TriageQueueTests(unittest.TestCase):
             [queue.dequeue() for _ in range(3)], [critical, second, standard]
         )
 
+    def test_empty_queue_error_is_specific(self):
+        queue = TriageQueue()
+        for operation in (queue.dequeue, queue.peek):
+            with self.subTest(operation=operation.__name__):
+                with self.assertRaises(EmptyQueueError):
+                    operation()
+
+    def test_only_patients_can_be_enqueued(self):
+        queue = TriageQueue()
+        with self.assertRaises(TypeError):
+            queue.enqueue(("Ana", 1))
+        self.assertEqual(queue.list_queue(), [])
+
+    def test_concurrent_workers_never_claim_the_same_patient(self):
+        queue = TriageQueue()
+        total = 2000
+        patients = [Patient(f"P{i}", i % 3 + 1) for i in range(total)]
+        claimed: list[Patient] = []
+        claimed_lock = threading.Lock()
+        producers_done = threading.Event()
+
+        def produce(chunk):
+            for patient in chunk:
+                queue.enqueue(patient)
+
+        def consume():
+            while True:
+                try:
+                    patient = queue.dequeue()
+                except EmptyQueueError:
+                    if producers_done.is_set() and not queue.list_queue():
+                        return
+                    continue
+                with claimed_lock:
+                    claimed.append(patient)
+
+        producers = [
+            threading.Thread(target=produce, args=(patients[i::4],)) for i in range(4)
+        ]
+        consumers = [threading.Thread(target=consume) for _ in range(4)]
+        for thread in producers + consumers:
+            thread.start()
+        for thread in producers:
+            thread.join()
+        producers_done.set()
+        for thread in consumers:
+            thread.join()
+
+        self.assertEqual(len(claimed), total)
+        self.assertEqual({p.name for p in claimed}, {p.name for p in patients})
+
     def test_queue_remains_usable_after_empty_operations(self):
         queue = TriageQueue()
         with self.assertRaises(IndexError):
@@ -149,13 +213,24 @@ class TriageCLITests(unittest.TestCase):
         self.assertIn("El nombre no puede estar vacío", text)
         self.assertEqual(text.count("El nivel de triaje debe ser"), 2)
         self.assertEqual(text.count("No hay pacientes en la cola."), 3)
-        self.assertIn("Nivel 1: 1", text)
-        self.assertIn("Nivel 2: 0", text)
-        self.assertIn("Nivel 3: 1", text)
+        self.assertIn("Nivel 1 (Crítico): 1", text)
+        self.assertIn("Nivel 2 (Urgente): 0", text)
+        self.assertIn("Nivel 3 (Estándar): 1", text)
         listing = text.split("Pacientes en orden de atención:")[1].split("\n1. Añadir paciente")[0]
         self.assertLess(listing.index("Luis | Nivel 1"), listing.index("Ana | Nivel 3"))
         self.assertLess(text.index("Siguiente paciente: Luis"), text.index("Siguiente paciente: Ana"))
         self.assertIn("Hasta luego.", text)
+
+    def test_cli_uses_injected_queue(self):
+        queue = TriageQueue()
+        critical = Patient("Eva", 1)
+        queue.enqueue(critical)
+        with patch("builtins.input", side_effect=["3", "2", "5"]), patch("sys.stdout", new_callable=StringIO) as output:
+            TriageCLI(queue).run()
+        text = output.getvalue()
+        self.assertIn("1. Eva | Nivel 1 (Crítico)", text)
+        self.assertIn("Siguiente paciente: Eva", text)
+        self.assertEqual(queue.list_queue(), [])
 
     def test_eof_exits_cleanly_during_patient_registration(self):
         with patch("builtins.input", side_effect=["1", EOFError]), patch("sys.stdout", new_callable=StringIO) as output:

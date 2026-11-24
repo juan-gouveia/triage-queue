@@ -4,7 +4,7 @@
 
 `TriageQueue` utiliza un min-heap de `heapq`. Cada entrada contiene el nivel de triaje, la fecha de llegada normalizada a UTC, un contador de inserción y el paciente. El heap compara estos campos en ese orden: primero atiende el nivel menor y, dentro del mismo nivel, la llegada más antigua. Si dos fechas coinciden, el contador conserva el orden de inserción y evita comparar objetos `Patient`.
 
-Las fechas de llegada deben incluir zona horaria. `Patient` genera por defecto una fecha UTC; si se proporciona una fecha explícita, la cola rechaza las que no incluyen zona horaria. La prioridad de un paciente crítico recién encolado se aplica a los pacientes que aún esperan, no a uno que ya se ha retirado.
+`Patient` valida sus propios datos al crearse: nombre no vacío, nivel entero entre 1 y 3 y fecha de llegada con zona horaria (por defecto, la hora actual en UTC). Así, cualquier paciente que llegue a la cola ya es válido, venga de la CLI o de otra aplicación. La prioridad de un paciente crítico recién encolado se aplica a los pacientes que aún esperan, no a uno que ya se ha retirado.
 
 Para *n* pacientes, encolar y desencolar cuestan O(log n), y consultar el siguiente cuesta O(1). Listar ordena una copia en O(n log n), sin modificar la cola; calcular las estadísticas recorre el heap en O(n).
 
@@ -14,10 +14,19 @@ Para *n* pacientes, encolar y desencolar cuestan O(log n), y consultar el siguie
 - Una lista ordenada permite consultar el siguiente fácilmente, pero insertar puede requerir desplazar O(n) elementos.
 - Tres colas separadas, una por nivel, permiten operaciones eficientes si los pacientes se insertan en orden de llegada. Son una opción válida para los tres niveles fijos; el heap también ordena fechas explícitas que se encolen fuera de orden y permite añadir prioridades sin crear otra cola por nivel.
 
-## Posible concurrencia
+## Concurrencia
 
-La implementación actual es de un solo hilo y **no** garantiza seguridad ante acceso concurrente. Si se incorporan workers en un mismo proceso, todas las operaciones sobre el heap y el contador deben coordinarse con el mismo bloqueo; las lecturas también deben protegerse para obtener una vista coherente.
+`TriageQueue` protege el heap y el contador con un único `threading.Lock`, de modo que varios workers del mismo proceso pueden usarla a la vez.
 
-Para reclamar un paciente, un worker adquiriría el bloqueo, seleccionaría y retiraría el primer paciente y lo registraría como «en atención» antes de liberar el bloqueo. Otro worker no podría retirar la misma entrada durante esa transición. La inserción de un nuevo paciente crítico también se realizaría bajo el bloqueo: si se completa antes de la selección, tiene prioridad; si ocurre después, no desplaza al paciente ya reclamado.
+**Reclamar un paciente.** `dequeue()` hace, dentro del bloqueo, la comprobación de cola vacía y la retirada (`heappop`) como un solo paso. El paciente sale del heap *antes* de que el worker lo reciba, así que ningún otro worker puede verlo ni extraerlo después. Si dos workers llaman a la vez, uno espera al otro y obtiene el siguiente paciente, o `EmptyQueueError` si ya no queda nadie.
 
-Para evitar procesar dos veces a un mismo paciente que pudiera encolarse más de una vez, haría falta además una identidad única y comprobarla bajo la misma sincronización. Estas medidas describen un posible diseño, no están implementadas. Un bloqueo en memoria tampoco ofrece recuperación ante fallos ni coordinación entre procesos; para ello se necesitaría almacenamiento y transacciones compartidas.
+**Llegada de un crítico mientras otro worker extrae.** `enqueue()` también se ejecuta bajo el mismo bloqueo, por lo que las dos operaciones nunca se intercalan: o el crítico entra antes de la extracción (y es él quien sale), o entra después (y queda el primero para la siguiente). El heap nunca se observa a medio reorganizar.
+
+**`peek()` no sirve para reclamar.** `peek()` y `dequeue()` son atómicas por separado, pero no en conjunto: entre ambas llamadas otro worker puede llevarse a ese paciente o puede llegar un crítico. Dos workers que hagan `peek()` verán al mismo paciente. Por eso un worker reclama siempre con `dequeue()`; `peek()` es solo informativo (por ejemplo, para mostrarlo en pantalla).
+
+`list_queue()` y `stats()` toman una instantánea bajo el bloqueo, de modo que devuelven un estado coherente aunque haya escrituras simultáneas.
+
+### Límites
+
+- Si un mismo paciente pudiera encolarse dos veces, haría falta un identificador único comprobado bajo el mismo bloqueo para evitar atenderlo dos veces.
+- El bloqueo vive en memoria: no coordina varios procesos ni sobrevive a un fallo. Para eso se necesitaría almacenamiento compartido con transacciones (por ejemplo, una base de datos que reclame filas con `SELECT … FOR UPDATE SKIP LOCKED`) y un estado «en atención» que se pueda recuperar si el worker cae.

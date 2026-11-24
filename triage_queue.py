@@ -1,7 +1,14 @@
 import heapq
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import count
+
+LEVEL_LABELS = {1: "Crítico", 2: "Urgente", 3: "Estándar"}
+
+
+class EmptyQueueError(IndexError):
+    """Se intentó consultar o extraer un paciente de una cola vacía."""
 
 
 @dataclass(frozen=True)
@@ -11,52 +18,58 @@ class Patient:
     arrived_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def __post_init__(self) -> None:
-        if type(self.triage_level) is not int or self.triage_level not in (1, 2, 3):
+        if not isinstance(self.name, str) or not self.name.strip():
+            raise ValueError("El nombre del paciente no puede estar vacío.")
+        if type(self.triage_level) is not int or self.triage_level not in LEVEL_LABELS:
             raise ValueError("El nivel de triaje debe ser un entero entre 1 y 3.")
+        if not isinstance(self.arrived_at, datetime) or self.arrived_at.utcoffset() is None:
+            raise ValueError("La fecha de llegada debe incluir una zona horaria.")
 
 
 class TriageQueue:
     def __init__(self) -> None:
         self._patients: list[tuple[int, datetime, int, Patient]] = []
         self._sequence = count()
+        self._lock = threading.Lock()
 
     def enqueue(self, patient: Patient) -> None:
-        arrived_at = patient.arrived_at
-        if not isinstance(arrived_at, datetime) or arrived_at.utcoffset() is None:
-            raise ValueError("La fecha de llegada debe incluir una zona horaria.")
-        heapq.heappush(
-            self._patients,
-            (
-                patient.triage_level,
-                arrived_at.astimezone(timezone.utc),
-                next(self._sequence),
-                patient,
-            ),
-        )
+        if not isinstance(patient, Patient):
+            raise TypeError("Solo se pueden encolar instancias de Patient.")
+        entry_time = patient.arrived_at.astimezone(timezone.utc)
+        with self._lock:
+            heapq.heappush(
+                self._patients,
+                (patient.triage_level, entry_time, next(self._sequence), patient),
+            )
 
     def dequeue(self) -> Patient:
-        if not self._patients:
-            raise IndexError("No hay pacientes en la cola.")
-        return heapq.heappop(self._patients)[3]
+        with self._lock:
+            if not self._patients:
+                raise EmptyQueueError("No hay pacientes en la cola.")
+            return heapq.heappop(self._patients)[3]
 
     def peek(self) -> Patient:
-        if not self._patients:
-            raise IndexError("No hay pacientes en la cola.")
-        return self._patients[0][3]
+        with self._lock:
+            if not self._patients:
+                raise EmptyQueueError("No hay pacientes en la cola.")
+            return self._patients[0][3]
 
     def list_queue(self) -> list[Patient]:
-        return [entry[3] for entry in sorted(self._patients)]
+        with self._lock:
+            snapshot = list(self._patients)
+        return [entry[3] for entry in sorted(snapshot)]
 
     def stats(self) -> dict[int, int]:
-        counts = {1: 0, 2: 0, 3: 0}
-        for level, _, _, _ in self._patients:
-            counts[level] += 1
+        counts = dict.fromkeys(LEVEL_LABELS, 0)
+        with self._lock:
+            for level, _, _, _ in self._patients:
+                counts[level] += 1
         return counts
 
 
 class TriageCLI:
-    def __init__(self) -> None:
-        self._queue = TriageQueue()
+    def __init__(self, queue: TriageQueue | None = None) -> None:
+        self._queue = queue if queue is not None else TriageQueue()
 
     def run(self) -> None:
         try:
@@ -110,7 +123,7 @@ class TriageCLI:
     def _call_next(self) -> None:
         try:
             patient = self._queue.dequeue()
-        except IndexError as error:
+        except EmptyQueueError as error:
             print(error)
             return
         print(f"Siguiente paciente: {self._format_patient(patient)}")
@@ -121,20 +134,19 @@ class TriageCLI:
             print("No hay pacientes en la cola.")
             return
         print("Pacientes en orden de atención:")
-        for patient in patients:
-            print(self._format_patient(patient))
+        for position, patient in enumerate(patients, start=1):
+            print(f"  {position}. {self._format_patient(patient)}")
 
     def _show_stats(self) -> None:
         print("Pacientes en espera por nivel:")
         for level, total in self._queue.stats().items():
-            print(f"Nivel {level}: {total}")
+            print(f"  Nivel {level} ({LEVEL_LABELS[level]}): {total}")
 
     @staticmethod
     def _format_patient(patient: Patient) -> str:
-        return (
-            f"{patient.name} | Nivel {patient.triage_level}"
-            f" | Llegada: {patient.arrived_at.isoformat()}"
-        )
+        level = patient.triage_level
+        local_time = patient.arrived_at.astimezone().strftime("%H:%M:%S")
+        return f"{patient.name} | Nivel {level} ({LEVEL_LABELS[level]}) | Llegada: {local_time}"
 
 
 def main() -> None:
