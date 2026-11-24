@@ -1,8 +1,10 @@
 import unittest
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
+from io import StringIO
+from unittest.mock import patch
 
-from triage_queue import Patient, TriageQueue
+from triage_queue import Patient, TriageCLI, TriageQueue
 
 
 class PatientTests(unittest.TestCase):
@@ -99,6 +101,34 @@ class TriageQueueTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "zona horaria"):
             queue.enqueue(Patient("Sin zona", 1, datetime(2026, 1, 1)))
         self.assertEqual(queue.list_queue(), [existing])
+
+
+class TriageCLITests(unittest.TestCase):
+    def test_menu_handles_invalid_input_and_calls_by_priority(self):
+        inputs = [
+            "x", "2", "3", "1", "", "Ana", "no", "4", "3",
+            "1", "Luis", "1", "3", "4", "2", "2", "2", "5",
+        ]
+        with patch("builtins.input", side_effect=inputs), patch("sys.stdout", new_callable=StringIO) as output:
+            TriageCLI().run()
+
+        text = output.getvalue()
+        self.assertIn("Opción inválida", text)
+        self.assertIn("El nombre no puede estar vacío", text)
+        self.assertEqual(text.count("El nivel de triaje debe ser"), 2)
+        self.assertEqual(text.count("No hay pacientes en la cola."), 3)
+        self.assertIn("Nivel 1: 1", text)
+        self.assertIn("Nivel 2: 0", text)
+        self.assertIn("Nivel 3: 1", text)
+        listing = text.split("Pacientes en orden de atención:")[1].split("\n1. Añadir paciente")[0]
+        self.assertLess(listing.index("Luis | Nivel 1"), listing.index("Ana | Nivel 3"))
+        self.assertLess(text.index("Siguiente paciente: Luis"), text.index("Siguiente paciente: Ana"))
+        self.assertIn("Hasta luego.", text)
+
+    def test_eof_exits_cleanly_during_patient_registration(self):
+        with patch("builtins.input", side_effect=["1", EOFError]), patch("sys.stdout", new_callable=StringIO) as output:
+            TriageCLI().run()
+        self.assertIn("Entrada finalizada", output.getvalue())
 
 
 if __name__ == "__main__":

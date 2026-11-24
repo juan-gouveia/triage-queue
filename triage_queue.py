@@ -52,3 +52,94 @@ class TriageQueue:
         for level, _, _, _ in self._patients:
             counts[level] += 1
         return counts
+
+
+class TriageCLI:
+    def __init__(self) -> None:
+        self._queue = TriageQueue()
+
+    def run(self) -> None:
+        try:
+            while True:
+                print("\n1. Añadir paciente")
+                print("2. Llamar al siguiente paciente")
+                print("3. Ver cola")
+                print("4. Ver estadísticas")
+                print("5. Salir")
+                choice = input("Elige una opción: ").strip()
+
+                if choice == "1":
+                    self._add_patient()
+                elif choice == "2":
+                    self._call_next()
+                elif choice == "3":
+                    self._show_queue()
+                elif choice == "4":
+                    self._show_stats()
+                elif choice == "5":
+                    print("Hasta luego.")
+                    return
+                else:
+                    print("Opción inválida. Elige un número del 1 al 5.")
+        except (EOFError, KeyboardInterrupt):
+            print("\nEntrada finalizada. Hasta luego.")
+
+    def _add_patient(self) -> None:
+        while True:
+            name = input("Nombre del paciente: ").strip()
+            if name:
+                break
+            print("El nombre no puede estar vacío.")
+
+        while True:
+            level_input = input("Nivel de triaje (1: crítico, 2: urgente, 3: estándar): ")
+            try:
+                level = int(level_input)
+            except ValueError:
+                print("El nivel de triaje debe ser un entero entre 1 y 3.")
+                continue
+            try:
+                patient = Patient(name, level)
+            except ValueError as error:
+                print(error)
+                continue
+            self._queue.enqueue(patient)
+            print(f"Paciente añadido: {patient.name}.")
+            return
+
+    def _call_next(self) -> None:
+        try:
+            patient = self._queue.dequeue()
+        except IndexError as error:
+            print(error)
+            return
+        print(f"Siguiente paciente: {self._format_patient(patient)}")
+
+    def _show_queue(self) -> None:
+        patients = self._queue.list_queue()
+        if not patients:
+            print("No hay pacientes en la cola.")
+            return
+        print("Pacientes en orden de atención:")
+        for patient in patients:
+            print(self._format_patient(patient))
+
+    def _show_stats(self) -> None:
+        print("Pacientes en espera por nivel:")
+        for level, total in self._queue.stats().items():
+            print(f"Nivel {level}: {total}")
+
+    @staticmethod
+    def _format_patient(patient: Patient) -> str:
+        return (
+            f"{patient.name} | Nivel {patient.triage_level}"
+            f" | Llegada: {patient.arrived_at.isoformat()}"
+        )
+
+
+def main() -> None:
+    TriageCLI().run()
+
+
+if __name__ == "__main__":
+    main()
