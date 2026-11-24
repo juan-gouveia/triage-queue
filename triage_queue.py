@@ -13,6 +13,11 @@ class EmptyQueueError(IndexError):
 
 @dataclass(frozen=True)
 class Patient:
+    """Paciente en espera. Inmutable y validado al crearse.
+
+    `arrived_at` debe incluir zona horaria; por defecto es la hora actual en UTC.
+    """
+
     name: str
     triage_level: int
     arrived_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -27,12 +32,20 @@ class Patient:
 
 
 class TriageQueue:
+    """Cola de prioridad de triaje, segura para varios hilos.
+
+    Internamente es un min-heap de tuplas (nivel, llegada en UTC, contador, paciente):
+    primero el nivel más grave, luego la llegada más antigua y, si coinciden,
+    el orden de inserción.
+    """
+
     def __init__(self) -> None:
         self._patients: list[tuple[int, datetime, int, Patient]] = []
         self._sequence = count()
         self._lock = threading.Lock()
 
     def enqueue(self, patient: Patient) -> None:
+        """Añade un paciente en la posición que le corresponde por nivel y llegada."""
         if not isinstance(patient, Patient):
             raise TypeError("Solo se pueden encolar instancias de Patient.")
         entry_time = patient.arrived_at.astimezone(timezone.utc)
@@ -43,23 +56,30 @@ class TriageQueue:
             )
 
     def dequeue(self) -> Patient:
+        """Retira y devuelve el siguiente paciente. Lanza EmptyQueueError si no hay ninguno."""
         with self._lock:
             if not self._patients:
                 raise EmptyQueueError("No hay pacientes en la cola.")
             return heapq.heappop(self._patients)[3]
 
     def peek(self) -> Patient:
+        """Devuelve el siguiente paciente sin retirarlo. Lanza EmptyQueueError si no hay ninguno.
+
+        Solo informativo: para reclamar un paciente usar siempre dequeue().
+        """
         with self._lock:
             if not self._patients:
                 raise EmptyQueueError("No hay pacientes en la cola.")
             return self._patients[0][3]
 
     def list_queue(self) -> list[Patient]:
+        """Devuelve los pacientes en espera en orden de atención, sin modificar la cola."""
         with self._lock:
             snapshot = list(self._patients)
         return [entry[3] for entry in sorted(snapshot)]
 
     def stats(self) -> dict[int, int]:
+        """Devuelve {nivel: pacientes en espera} con los tres niveles, aunque valgan 0."""
         counts = dict.fromkeys(LEVEL_LABELS, 0)
         with self._lock:
             for level, _, _, _ in self._patients:
@@ -68,6 +88,8 @@ class TriageQueue:
 
 
 class TriageCLI:
+    """Menú de terminal en bucle sobre una TriageQueue (nueva o recibida)."""
+
     def __init__(self, queue: TriageQueue | None = None) -> None:
         self._queue = queue if queue is not None else TriageQueue()
 

@@ -6,6 +6,8 @@
 
 `Patient` valida sus propios datos al crearse: nombre no vacío, nivel entero entre 1 y 3 y fecha de llegada con zona horaria (por defecto, la hora actual en UTC). Así, cualquier paciente que llegue a la cola ya es válido, venga de la CLI o de otra aplicación. La prioridad de un paciente crítico recién encolado se aplica a los pacientes que aún esperan, no a uno que ya se ha retirado.
 
+Ordenar por `arrived_at` tiene un riesgo conocido: la hora por defecto sale del reloj del sistema, y si este se ajusta hacia atrás (por ejemplo, al sincronizarse por red), un paciente que llegó después podría quedar por delante dentro de su nivel. Se acepta porque permite registrar llegadas con su hora real aunque se encolen más tarde. Si se quisiera eliminar, bastaría con ordenar solo por nivel y contador.
+
 Para *n* pacientes, encolar y desencolar cuestan O(log n), y consultar el siguiente cuesta O(1). Listar ordena una copia en O(n log n), sin modificar la cola; calcular las estadísticas recorre el heap en O(n).
 
 ### Alternativas consideradas

@@ -200,42 +200,53 @@ class TriageQueueTests(unittest.TestCase):
 
 
 class TriageCLITests(unittest.TestCase):
-    def test_menu_handles_invalid_input_and_calls_by_priority(self):
-        inputs = [
-            "x", "2", "3", "1", "", "Ana", "no", "4", "3",
-            "1", "Luis", "1", "3", "4", "2", "2", "2", "5",
-        ]
+    @staticmethod
+    def _run_cli(inputs, queue=None):
+        """Ejecuta la CLI con las entradas dadas y devuelve todo lo impreso."""
         with patch("builtins.input", side_effect=inputs), patch("sys.stdout", new_callable=StringIO) as output:
-            TriageCLI().run()
+            TriageCLI(queue).run()
+        return output.getvalue()
 
-        text = output.getvalue()
-        self.assertIn("Opción inválida", text)
-        self.assertIn("El nombre no puede estar vacío", text)
+    def test_invalid_menu_option_returns_to_menu(self):
+        text = self._run_cli(["x", "9", "5"])
+        self.assertEqual(text.count("Opción inválida"), 2)
+        self.assertIn("Hasta luego.", text)
+
+    def test_invalid_name_and_level_are_asked_again(self):
+        queue = TriageQueue()
+        text = self._run_cli(["1", "", "   ", "Ana", "no", "4", "3", "5"], queue)
+        self.assertEqual(text.count("El nombre no puede estar vacío"), 2)
         self.assertEqual(text.count("El nivel de triaje debe ser"), 2)
-        self.assertEqual(text.count("No hay pacientes en la cola."), 3)
+        self.assertIn("Paciente añadido: Ana.", text)
+        self.assertEqual([(p.name, p.triage_level) for p in queue.list_queue()], [("Ana", 3)])
+
+    def test_empty_queue_is_reported_without_crashing(self):
+        text = self._run_cli(["2", "3", "5"])
+        self.assertEqual(text.count("No hay pacientes en la cola."), 2)
+        self.assertIn("Hasta luego.", text)
+
+    def test_queue_and_stats_follow_priority(self):
+        inputs = ["1", "Ana", "3", "1", "Luis", "1", "4", "3", "2", "2", "5"]
+        text = self._run_cli(inputs)
         self.assertIn("Nivel 1 (Crítico): 1", text)
         self.assertIn("Nivel 2 (Urgente): 0", text)
         self.assertIn("Nivel 3 (Estándar): 1", text)
         listing = text.split("Pacientes en orden de atención:")[1].split("\n1. Añadir paciente")[0]
-        self.assertLess(listing.index("Luis | Nivel 1"), listing.index("Ana | Nivel 3"))
+        self.assertIn("1. Luis | Nivel 1 (Crítico)", listing)
+        self.assertIn("2. Ana | Nivel 3 (Estándar)", listing)
         self.assertLess(text.index("Siguiente paciente: Luis"), text.index("Siguiente paciente: Ana"))
-        self.assertIn("Hasta luego.", text)
 
     def test_cli_uses_injected_queue(self):
         queue = TriageQueue()
-        critical = Patient("Eva", 1)
-        queue.enqueue(critical)
-        with patch("builtins.input", side_effect=["3", "2", "5"]), patch("sys.stdout", new_callable=StringIO) as output:
-            TriageCLI(queue).run()
-        text = output.getvalue()
+        queue.enqueue(Patient("Eva", 1))
+        text = self._run_cli(["3", "2", "5"], queue)
         self.assertIn("1. Eva | Nivel 1 (Crítico)", text)
         self.assertIn("Siguiente paciente: Eva", text)
         self.assertEqual(queue.list_queue(), [])
 
     def test_eof_exits_cleanly_during_patient_registration(self):
-        with patch("builtins.input", side_effect=["1", EOFError]), patch("sys.stdout", new_callable=StringIO) as output:
-            TriageCLI().run()
-        self.assertIn("Entrada finalizada", output.getvalue())
+        text = self._run_cli(["1", EOFError])
+        self.assertIn("Entrada finalizada", text)
 
 
 if __name__ == "__main__":
